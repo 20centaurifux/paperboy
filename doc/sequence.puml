@@ -1,0 +1,119 @@
+@startuml Paperboy message flow
+!theme amiga
+
+title Paperboy message lifecycle
+
+autonumber
+
+actor Application
+participant Spooler
+participant Queue
+participant Broker
+participant "Destination system" as Destination
+
+== Startup ==
+
+Application -> Spooler: (start!)
+activate Spooler
+note right of Spooler
+  Starts the worker that waits
+  for removed messages.
+end note
+
+Application -> Broker: (start!)
+activate Broker
+note right of Broker
+  Starts the worker that waits
+  for available messages.
+end note
+
+== Submission ==
+
+Application -> Spooler: (submit! path payload)
+activate Spooler
+Spooler -> Spooler: Generate message ID
+Spooler -> Spooler: Create and optionally persist envelope
+Spooler -> Queue: (put! envelope)
+activate Queue
+Queue -> Queue: Make envelope available
+Queue --> Spooler
+deactivate Queue
+Spooler --> Application: envelope
+deactivate Spooler
+
+== Delivery ==
+
+Broker -> Queue: (await-ready! timeout-ms)
+activate Queue
+Queue --> Broker: true
+deactivate Queue
+
+Broker -> Queue: (claim!)
+activate Queue
+Queue -> Queue: Reserve next envelope
+Queue --> Broker: envelope
+deactivate Queue
+
+Broker -> Destination: Transmit envelope
+activate Destination
+
+alt Transmission succeeds
+  Destination --> Broker: success
+  deactivate Destination
+
+  Broker -> Queue: (ack! envelope)
+  activate Queue
+  Queue -> Queue: Mark envelope as delivered
+  deactivate Queue
+
+  == Persistent cleanup ==
+
+  Spooler -> Queue: (await-removed! timeout-ms)
+  activate Queue
+  Queue --> Spooler: true
+  deactivate Queue
+
+  Spooler -> Queue: (drain-removed! batch-size, remove-fn)
+  activate Queue
+
+  loop For each batch of removed IDs
+    Queue -> Spooler: remove-fn(ids)
+    activate Spooler
+
+    alt Persisted messages were deleted
+      Spooler --> Queue: true
+      Queue -> Queue: Complete removal
+    else Deletion failed
+      Spooler --> Queue: false
+      Queue -> Queue: Retain removal request
+      note right of Queue
+        Processing stops so the IDs
+        can be retried later.
+      end note
+    end
+
+    deactivate Spooler
+  end
+
+  Queue --> Spooler: drained IDs
+  deactivate Queue
+
+else Transmission fails
+  Destination --> Broker: failure
+  deactivate Destination
+  note over Broker, Queue
+    The broker does not call ack!.
+    The delivery remains unacknowledged.
+    The broker is responsible for buffering the
+    in-flight message and retrying it later.
+  end note
+end
+
+== Shutdown ==
+
+Application -> Broker: stop!()
+deactivate Broker
+Application -> Spooler: stop!()
+deactivate Spooler
+
+@enduml

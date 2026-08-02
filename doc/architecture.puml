@@ -1,0 +1,57 @@
+@startuml Paperboy
+!theme amiga
+
+left to right direction
+
+hide empty members
+
+class Message {
+  +id: string
+  +payload: string
+}
+
+class Envelope {
+  +path: string
+  +message: Message
+}
+
+Envelope *-- "1" Message
+
+interface Lifecycle <<protocol>> {
+  +start!()
+  +stop!()
+}
+
+interface Spooler <<protocol>> {
+  +submit!(path: string, payload: string): Envelope
+}
+
+class SpoolerImpl
+
+SpoolerImpl ..|> Lifecycle
+SpoolerImpl ..|> Spooler
+SpoolerImpl --> "1" Producer
+
+interface Consumer <<protocol>> {
+  +await-ready!(timeout-ms: int): bool
+  +claim!(): Envelope?
+  +ack!(envelope: Envelope)
+}
+
+class QueueImpl
+
+QueueImpl ..|> Producer
+QueueImpl ..|> Consumer
+
+interface Producer <<protocol>> {
+  +put!(envelope: Envelope)
+  +await-removed!(timeout-ms: int): bool
+  +drain-removed!(batch-size: int, remove-fn: set<<id>> -> bool): set<id>
+}
+
+class BrokerImpl
+
+BrokerImpl ..|> Lifecycle
+BrokerImpl --> "1" Consumer
+
+@enduml
