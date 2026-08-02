@@ -57,7 +57,7 @@ If transmission fails, the Broker must not call `ack!`. The delivery remains una
 
 ## Example
 
-The following examples wires the three components together and deliberately submits messages before starting the Broker. This demonstrates that accepting a message and delivering it are independent operations.
+The following example wires the three components together and deliberately submits messages before starting the Broker. This demonstrates that accepting a message and delivering it are independent operations.
 
 ```clojure
 (ns example
