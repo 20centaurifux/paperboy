@@ -1,39 +1,66 @@
 (ns paperboy.broker.stdout
-  (:require [paperboy.api :as api]))
+  "A diagnostic broker that writes queued messages to `*out*`.
 
-(def ^:private ready-timeout-ms 250)
+  Successfully written envelopes are acknowledged. A write failure moves the
+  broker to `:failed` and leaves the claimed envelope in flight."
+  (:require [paperboy.api :as api]
+            [paperboy.event :as ev]
+            [paperboy.specs :as specs]
+            [paperboy.utils :as utils]
+            [supervise.core :as sv]))
 
-(defn- run
-  [consumer]
-  (try
-    (while (not (.isInterrupted (Thread/currentThread)))
-      (when (api/await-ready! consumer ready-timeout-ms)
-        (when-let [envelope (api/claim! consumer)]
-          (let [{path :path {id :id payload :payload} :message} envelope]
-            (printf "Message `%s' to `%s'\n\t`%s'\n\n" id path payload)
-            (flush)
-            (api/ack! consumer envelope)))))
-    (catch InterruptedException _)))
+(def ^:private ready-timeout-ms 500)
+(def ^:private sender ::stdout)
 
-(deftype Stdout [consumer worker]
+(deftype Stdout [component]
   api/Lifecycle
   (start! [_]
-    (locking worker
-      (when-not @worker
-        (let [thread (Thread. ^Runnable (bound-fn [] (run consumer))
-                              "paperboy-broker-stdout")]
-          (reset! worker thread)
-          (.start thread))))
-    nil)
+    (sv/start! component))
 
   (stop! [_]
-    (locking worker
-      (when-let [thread @worker]
-        (.interrupt ^Thread thread)
-        (.join ^Thread thread)
-        (reset! worker nil)))
-    nil))
+    (sv/stop! component)))
+
+(alter-meta! #'->Stdout assoc :private true)
+
+(defn- print-envelope!
+  [envelope]
+  (let [{path :path
+         {id :id payload :payload} :message} envelope
+        ^java.io.Writer out *out*]
+    (.write out (format "Message `%s' to `%s'\n\t`%s'\n" id path payload))
+    (.flush out)
+    (when (and (instance? java.io.PrintWriter out)
+               (.checkError ^java.io.PrintWriter out))
+      (throw (ex-info "Printing to stdout failed"
+                      {:envelope envelope})))))
+
+(defn- component
+  [consumer {:keys [on-event on-error]}]
+  (sv/component
+   (fn [interrupt-token]
+     (loop []
+       (when (api/await-ready! consumer ready-timeout-ms)
+         (sv/check! interrupt-token)
+         (when-let [envelope (api/claim! consumer)]
+           (ev/emit! on-event (ev/begin-transmit sender envelope))
+           (try
+             (print-envelope! envelope)
+             (catch Exception exception
+               (ev/emit! on-error
+                         (ev/operation-failure sender
+                                               :broker/transmit
+                                               exception))
+               (throw exception)))
+           (ev/emit! on-event (ev/end-transmit sender envelope))
+           (api/ack! consumer envelope)))
+       (recur)))
+   {:on-transit (fn [transition]
+                  (ev/emit! on-event (ev/transition sender
+                                                    transition)))}))
 
 (defn stdout
-  [consumer]
-  (->Stdout consumer (atom nil)))
+  ([consumer]
+   (stdout consumer {}))
+  ([consumer opts]
+   (utils/validate! ::specs/event-opts "Invalid options" opts)
+   (->Stdout (component consumer opts))))

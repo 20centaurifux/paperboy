@@ -1,43 +1,65 @@
 (ns paperboy.spooler.passthrough
-  (:require [paperboy.api :as api]))
+  "A spooler that wraps submitted payloads in envelopes and puts them directly
+  onto a queue.
+
+  A background component removes the IDs of acknowledged messages from the
+  queue. Payloads are not persisted outside the queue."
+  (:require [paperboy.api :as api]
+            [paperboy.event :as ev]
+            [paperboy.specs :as specs]
+            [paperboy.utils :as utils]
+            [supervise.core :as sv]))
 
 (def ^:private purge-batch-size 100)
 (def ^:private cleanup-interval-ms 5000)
+(def ^:private sender ::passtrough)
 
-(defn- run
-  [queue]
-  (try
-    (while (not (.isInterrupted (Thread/currentThread)))
-      (api/await-removed! queue cleanup-interval-ms)
-      (api/drain-removed! queue purge-batch-size (constantly true)))
-    (catch InterruptedException _)))
-
-(deftype Passthrough [seq-no queue worker]
+(deftype Passthrough [seq-no queue component opts]
   api/Lifecycle
   (start! [_]
-    (locking worker
-      (when-not @worker
-        (let [thread (Thread. ^Runnable (bound-fn [] (run queue))
-                              "paperboy-spooler-passthrough")]
-          (reset! worker thread)
-          (.start thread))))
-    nil)
+    (sv/start! component))
 
   (stop! [_]
-    (locking worker
-      (when-let [thread @worker]
-        (.interrupt ^Thread thread)
-        (.join ^Thread thread)
-        (reset! worker nil)))
-    nil)
+    (sv/stop! component))
 
   api/Spooler
   (submit! [_ path payload]
-    (let [env (api/envelope path {:id (str (swap! seq-no inc))
+    (let [{:keys [on-event on-error]} opts
+          env (api/envelope path {:id (str (swap! seq-no inc))
                                   :payload payload})]
-      (api/put! queue env)
+      (ev/emit! on-event (ev/begin-submit sender path payload))
+      (try
+        (api/put! queue env)
+        (ev/emit! on-event (ev/end-submit sender path payload))
+        (catch Exception exception
+          (ev/emit! on-error (ev/operation-failure sender
+                                                   :spooler/submit
+                                                   exception))
+          (throw exception)))
       env)))
 
+(alter-meta! #'->Passthrough assoc :private true)
+
+(defn- component
+  [queue {:keys [on-event]}]
+  (sv/component
+   (fn [interrupt-token]
+     (loop []
+       (sv/check! interrupt-token)
+       (api/await-removed! queue cleanup-interval-ms)
+       (api/drain-removed! queue purge-batch-size (constantly true))
+       (recur)))
+   {:on-transit (fn [transition]
+                  (ev/emit! on-event (ev/transition sender
+                                                    transition)))
+    :restart-after-failure? true}))
+
 (defn passthrough
-  [queue]
-  (->Passthrough (atom 0) queue (atom nil)))
+  ([queue]
+   (passthrough queue {}))
+  ([queue opts]
+   (utils/validate! ::specs/event-opts "Invalid options" opts)
+   (->Passthrough (atom 0)
+                  queue
+                  (component queue opts)
+                  opts)))

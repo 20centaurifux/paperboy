@@ -2,27 +2,27 @@
 
 ![Paperboy](doc/Paperboy.jpeg)
 
-`paperboy` is a Clojure abstraction for reliably passing messages to arbitrary brokers. It provides the building blocks needed to buffer, order, claim, deliver, and acknowledge messages between an application and a destination system.
+`Paperboy` is a Clojure abstraction for reliably passing messages to arbitrary brokers. It provides the building blocks needed to buffer, order, claim, deliver, and acknowledge messages between an application and a destination system.
 
-For example, Paperboy can provide a persistent buffer between an application and a messaging system such as MQTT. More generally, it can sit in front of any destination that may be temporarily unavailable: the application submits a message to Paperboy, which can persist and deliver it independently of the calling code and retry it later when necessary.
+For example, `Paperboy` can provide a persistent buffer between an application and a messaging system such as MQTT. More generally, it can sit in front of any destination that may be temporarily unavailable: the application submits a message to `Paperboy`, which can persist and deliver it independently of the calling code and retry it later when necessary.
 
-> **Project status:** Paperboy is at an early stage of development. Its API, protocols, data model, and behavior are still subject to change. The current implementations primarily exist to develop and validate the architecture and its concurrent workflows. Persistent storage and network destinations are not included yet.
+> **Project status:** `Paperboy` is at an early stage of development. Its API, protocols, data model, and behavior are still subject to change. The current implementations primarily exist to develop and validate the architecture and its concurrent workflows. Persistent storage and network destinations are not included yet.
 
 ## Architecture
 
-Paperboy consists of three separate components:
+`Paperboy` consists of three separate components:
 
 1. The **Spooler** accepts new messages from the application.
 2. The **Queue** coordinates available, in-flight, and successfully delivered messages.
 3. The **Broker** takes messages from the queue and transmits them to the destination system.
 
-![Paperboy architecture](doc/architecture.png)
+![`Paperboy` architecture](doc/architecture.png)
 
 The components communicate through small Clojure protocols. Each implementation can therefore be replaced independently. A persistent spooler does not need to know which concrete queue or broker is being used. Similarly, a broker does not need to know whether messages were persisted in memory, a file, or a database.
 
 ### Envelopes and messages
 
-Paperboy transports each message inside an envelope:
+`Paperboy` transports each message inside an envelope:
 
 ```clojure
 {:path "/sensors/temperature"
@@ -33,13 +33,13 @@ Paperboy transports each message inside an envelope:
 An envelope contains:
 
 - `:path`: the logical destination, such as a topic, channel, or routing key;
-- `:message`: the message itself;
-- `:id`: a unique identifier used to coordinate delivery and deletion;
-- `:payload`: the content to transmit.
+- `:message`: the message itself, containing:
+  - `:id`: a unique identifier used to coordinate delivery and deletion;
+  - `:payload`: the content to transmit.
 
 ### Message flow
 
-![Paperboy message flow](doc/message-flow.png)
+![`Paperboy` message flow](doc/message-flow.png)
 
 The message flow separates accepting a message from delivering it and from cleaning up its persisted copy.
 
@@ -62,7 +62,6 @@ The following example wires the three components together and deliberately submi
 ```clojure
 (ns example
   (:require [paperboy.api :as api]
-
             ;; The FIFO implements both sides of the Queue abstraction:
             ;; Producer for the Spooler and Consumer for the Broker.
             [paperboy.queue.fifo :as pq]
