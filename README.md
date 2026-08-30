@@ -55,6 +55,27 @@ If transmission succeeds, the Broker calls `ack!`. The Queue records the success
 
 If transmission fails, the Broker must not call `ack!`. The delivery remains unacknowledged, and the Broker is responsible for buffering the in-flight message and retrying it later. This allows each Broker implementation to apply the retry, backoff, and destination-specific error-handling strategy appropriate for its transport.
 
+### Queue implementations
+
+`paperboy.queue.fifo` offers a simple in-memory FIFO queue. It keeps all waiting envelopes in insertion order and makes them available to Brokers one at a time.
+
+`paperboy.queue.quota` offers an in-memory queue with per-path quotas. It accepts a default quota and optional route-specific quotas:
+
+```clojure
+(quota/quota {:size 100
+              :routes {"/tenants/a/*" {:size 10}
+                       "/alerts/?" {:size 20}}})
+```
+
+Quota route patterns use the same path segment rules as envelopes, plus two wildcards:
+
+- `?` matches exactly one path segment.
+- `*` matches the rest of the path.
+
+When an envelope is put into the queue, its path is matched against the quota routes. A match uses the matching route's `:size`, but the bucket is still the concrete matched path. For example, `/tenants/a/one` and `/tenants/a/two` both match `/tenants/a/*`, but they are stored in separate buckets, each with size `10`. Paths that match no route use the default `:size` and the default bucket.
+
+When a bucket is full, adding a newer envelope evicts older waiting envelopes from that bucket. Evicted message IDs become ready for cleanup through `await-removed!` and `drain-removed!`, just like acknowledged message IDs.
+
 ## Example
 
 The following example wires the three components together and deliberately submits messages before starting the Broker. This demonstrates that accepting a message and delivering it are independent operations.

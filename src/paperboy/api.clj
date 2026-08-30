@@ -45,7 +45,8 @@
     available. A claimed envelope is withheld from other consumers until it is
     acknowledged.")
   (ack! [consumer envelope]
-    "Acknowledges the successful delivery of a previously claimed `envelope`."))
+    "Acknowledges the successful delivery of a previously claimed `envelope`.
+    Implementations may identify the claimed envelope by its message ID."))
 
 (defprotocol Producer
   "Provides the producer and post-delivery cleanup side of a Paperboy queue."
