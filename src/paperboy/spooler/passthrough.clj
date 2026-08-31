@@ -12,7 +12,7 @@
 
 (def ^:private purge-batch-size 100)
 (def ^:private cleanup-interval-ms 5000)
-(def ^:private sender ::passtrough)
+(def ^:private sender ::passthrough)
 
 (deftype Passthrough [seq-no queue component opts]
   api/Lifecycle

@@ -39,8 +39,8 @@
   (sv/component
    (fn [interrupt-token]
      (loop []
+       (sv/check! interrupt-token)
        (when (api/await-ready! consumer ready-timeout-ms)
-         (sv/check! interrupt-token)
          (when-let [envelope (api/claim! consumer)]
            (ev/emit! on-event (ev/begin-transmit sender envelope))
            (try
