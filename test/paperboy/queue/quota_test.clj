@@ -9,6 +9,13 @@
   [path id]
   (api/envelope path {:id id :payload (str "payload-" id)}))
 
+(defn- enqueue-and-ack!
+  [queue envelopes]
+  (doseq [envelope envelopes]
+    (api/put! queue envelope))
+  (doseq [_ envelopes]
+    (api/ack! queue (api/claim! queue))))
+
 (deftest quota-test
   (let [queue (quota/quota {:size 10})]
     (is (satisfies? api/Producer queue))
@@ -60,6 +67,34 @@
              (api/drain-removed! queue 10 (constantly true))))
       (is (false? (api/await-removed! queue 0))))))
 
+(deftest await-work-test
+  (let [queue (quota/quota {:size 10})
+        queued (envelope "/notifications" "1")]
+    (testing "a positive timeout expires when no work is available"
+      (is (false? (api/await-ready! queue 10)))
+      (is (false? (api/await-removed! queue 10))))
+
+    (testing "put wakes a consumer waiting for an envelope"
+      (let [waiting (promise)
+            result (future
+                     (deliver waiting true)
+                     (api/await-ready! queue 2000))]
+        @waiting
+        (is (= ::timeout (deref result 50 ::timeout)))
+        (api/put! queue queued)
+        (is (true? (deref result 2000 ::timeout)))))
+
+    (testing "ack wakes a producer waiting for a removed ID"
+      (is (= queued (api/claim! queue)))
+      (let [waiting (promise)
+            result (future
+                     (deliver waiting true)
+                     (api/await-removed! queue 2000))]
+        @waiting
+        (is (= ::timeout (deref result 50 ::timeout)))
+        (api/ack! queue queued)
+        (is (true? (deref result 2000 ::timeout)))))))
+
 (deftest acknowledge-test
   (let [events (atom [])
         errors (atom [])
@@ -96,6 +131,60 @@
                             (api/put! queue first-envelope)))
       (is (= #{"1"} (api/drain-removed! queue 10 (constantly true))))
       (is (nil? (api/put! queue first-envelope))))))
+
+(deftest failed-removal-is-restored-test
+  (let [errors (atom [])
+        queue (quota/quota {:size 10}
+                           {:on-error #(swap! errors conj %)})
+        ids #{"1" "2" "3"}
+        envelopes (mapv #(envelope "/notifications" %) ids)
+        failure (ex-info "Removal failed" {})]
+    (enqueue-and-ack! queue envelopes)
+
+    (testing "a removal exception retains all IDs and emits an error"
+      (is (= #{} (api/drain-removed! queue 2 (fn [_] (throw failure)))))
+      (is (= 1 (count @errors)))
+      (is (= :operation/failed (:event (first @errors))))
+      (is (= :producer/drain-removed (:operation (first @errors))))
+      (is (identical? failure (:cause (first @errors))))
+      (is (true? (api/await-removed! queue 0)))
+      (is (= ids (api/drain-removed! queue 2 (constantly true))))
+      (is (false? (api/await-removed! queue 0))))))
+
+(deftest concurrent-drains-process-each-id-once-test
+  (let [queue (quota/quota {:size 10})
+        initial-ids #{"1" "2" "3"}
+        initial-envelopes (mapv #(envelope "/notifications" %) initial-ids)
+        first-batch-ready (promise)
+        release-first-batch (promise)]
+    (enqueue-and-ack! queue initial-envelopes)
+
+    (let [first-drain
+          (future
+            (api/drain-removed!
+             queue
+             10
+             (fn [batch]
+               (deliver first-batch-ready batch)
+               @release-first-batch
+               true)))]
+      (try
+        (is (= initial-ids (deref first-batch-ready 2000 ::timeout)))
+
+        (let [late-envelope (envelope "/notifications" "late")]
+          (api/put! queue late-envelope)
+          (is (= late-envelope (api/claim! queue)))
+          (api/ack! queue late-envelope))
+
+        (testing "a concurrent drain only processes IDs acknowledged later"
+          (is (= #{"late"}
+                 (api/drain-removed! queue 10 (constantly true)))))
+
+        (deliver release-first-batch true)
+        (is (= initial-ids (deref first-drain 2000 ::timeout)))
+        (is (false? (api/await-removed! queue 0)))
+        (finally
+          (deliver release-first-batch true))))))
 
 (deftest argument-validation-test
   (let [queue (quota/quota {:size 10})
