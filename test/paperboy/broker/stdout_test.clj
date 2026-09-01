@@ -4,8 +4,8 @@
             [paperboy.broker.stdout :as stdout]
             [paperboy.test-utils :as test-utils]))
 
-(def envelope (api/envelope "/notifications/email"
-                            {:id "message-1" :payload "hello"}))
+(def ^:private envelope (api/envelope "/notifications/email"
+                                      {:id "message-1" :payload "hello"}))
 
 (defn- oneshot-consumer
   [envelope acknowledged]
