@@ -76,6 +76,40 @@ When an envelope is put into the queue, its path is matched against the quota ro
 
 When a bucket is full, adding a newer envelope evicts older waiting envelopes from that bucket. Evicted message IDs become ready for cleanup through `await-removed!` and `drain-removed!`, just like acknowledged message IDs.
 
+### Broker implementations
+
+`paperboy.broker.stdout` is a diagnostic Broker that writes each claimed message to `*out*` and acknowledges it after a successful write.
+
+`paperboy.broker.mh` publishes messages to an MQTT broker through a [Machine Head](https://github.com/clojurewerkz/machine_head) client. The envelope's `:path` becomes the MQTT topic and its `:payload` becomes the published payload:
+
+```clojure
+(ns mqtt-example
+  (:require [clojurewerkz.machine-head.client :as mh]
+            [paperboy.api :as api]
+            [paperboy.broker.mh :as mqtt]
+            [paperboy.queue.fifo :as pq]
+            [paperboy.spooler.passthrough :as pp]))
+
+(def queue (pq/fifo))
+(def spooler (pp/passthrough queue))
+(def client (mh/connect "tcp://localhost:1883"))
+(def broker (mqtt/mqtt queue client))
+
+(api/start! spooler)
+(api/start! broker)
+(api/submit! spooler "sensors/temperature" "21.5")
+```
+
+The MQTT client owns the connection settings, authentication, and reconnect behavior. `Paperboy` claims and publishes one envelope at a time. While the client is disconnected or publishing fails, it retains the claimed envelope and retries it before claiming the next one. If publishing succeeds but acknowledging the envelope fails, `Paperboy` publishes it again. Delivery is therefore **at least once**, and MQTT consumers must tolerate duplicate messages.
+
+During controlled shutdown, stop the `Paperboy` components and close the MQTT client:
+
+```clojure
+(api/stop! broker)
+(api/stop! spooler)
+(mh/disconnect-and-close client)
+```
+
 ## Example
 
 The following example wires the three components together and deliberately submits messages before starting the Broker. This demonstrates that accepting a message and delivering it are independent operations.
