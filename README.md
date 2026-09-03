@@ -6,7 +6,7 @@
 
 For example, `Paperboy` can provide a persistent buffer between an application and a messaging system such as MQTT. More generally, it can sit in front of any destination that may be temporarily unavailable: the application submits a message to `Paperboy`, which can persist and deliver it independently of the calling code and retry it later when necessary.
 
-> **Project status:** `Paperboy` is at an early stage of development. Its API, protocols, data model, and behavior are still subject to change. The current implementations primarily exist to develop and validate the architecture and its concurrent workflows. Persistent storage and network destinations are not included yet.
+> **Project status:** `Paperboy` is at an early stage of development. Its API, protocols, data model, and behavior are still subject to change. The current implementations primarily exist to develop and validate the architecture and its concurrent workflows.
 
 ## Architecture
 
@@ -54,6 +54,30 @@ The message flow separates accepting a message from delivering it and from clean
 If transmission succeeds, the Broker calls `ack!`. The Queue records the successful delivery and notifies the Spooler that the corresponding persisted message may be removed. The Spooler's cleanup worker waits for this notification with `await-removed!`, obtains acknowledged message IDs in batches through `drain-removed!`, and deletes their persisted copies. A batch is completed only when the Spooler's removal function reports success; otherwise, the removal request is retained for a later attempt.
 
 If transmission fails, the Broker must not call `ack!`. The delivery remains unacknowledged, and the Broker is responsible for buffering the in-flight message and retrying it later. This allows each Broker implementation to apply the retry, backoff, and destination-specific error-handling strategy appropriate for its transport.
+
+### Spooler implementations
+
+`paperboy.spooler.passthrough` is a non-persistent Spooler. It assigns message IDs and forwards envelopes directly to the Queue.
+
+`paperboy.spooler.rocksdb` persists messages in a RocksDB database before making them available to the Queue. When it is created, it restores all messages still present in the database in ascending ID order. Its cleanup worker removes messages from RocksDB after the Queue reports that they were acknowledged or evicted.
+
+```clojure
+(ns persistent-example
+  (:require [paperboy.api :as api]
+            [paperboy.queue.fifo :as fifo]
+            [paperboy.spooler.rocksdb :as rocks]))
+
+(def queue (fifo/fifo))
+(def spooler (rocks/rocksdb "var/paperboy" queue))
+
+(api/start! spooler)
+(api/submit! spooler "/notifications/email" "hello")
+
+;; Stops cleanup and closes the RocksDB database.
+(.close ^java.io.Closeable spooler)
+```
+
+Message IDs are unique among messages retained by a RocksDB Spooler, but are not globally monotonic across restarts. If higher IDs have already been removed, they may be assigned again after the Spooler is reopened. The Queue connected to this Spooler must contain only envelopes submitted through that Spooler.
 
 ### Queue implementations
 
@@ -121,7 +145,7 @@ The following example wires the three components together and deliberately submi
             ;; Producer for the Spooler and Consumer for the Broker.
             [paperboy.queue.fifo :as pq]
 
-            ;; Passthrough is the current non-persistent Spooler. It creates
+            ;; Passthrough is a non-persistent Spooler. It creates
             ;; envelopes and forwards them directly to the Queue.
             [paperboy.spooler.passthrough :as pp]
 
