@@ -54,9 +54,15 @@
                                   (deliver transitioned events'))))})]
     (try
       (api/start! spooler)
-      (is (= 5000 (deref awaited 2000 ::timeout)))
-      (is (= {:batch-size 100 :removes-id? true}
-             (deref drained 2000 ::timeout)))
+
+      (testing "await removed envelopes"
+        (is (= @#'paperboy.spooler.passthrough/cleanup-interval-ms
+               (deref awaited 2000 ::timeout))))
+
+      (testing "purge removed envelopes"
+        (is (= {:batch-size @#'paperboy.spooler.passthrough/purge-batch-size
+                :removes-id? true}
+               (deref drained 2000 ::timeout))))
       (finally
         (api/stop! spooler)))
 
